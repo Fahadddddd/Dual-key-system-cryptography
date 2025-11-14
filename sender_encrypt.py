@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 """
-FINAL COMBINED SCRIPT
-----------------------
-AES-256-GCM Encryption + Biometric-Driven Dual Key System
-Final Year Project – Sender-Side Prototype
+FINAL SENDER-SIDE SCRIPT
+-------------------------
+AES-256-GCM Encryption + Biometric Dual Key Wrapping
 
-Features:
-1. Encrypt user message using AES-256-GCM.
-2. Generate msgID (UUID).
-3. Hash biometric data + salt.
-4. Derive user key via HKDF (identity_hash + server_secret + msgID).
-5. Encrypt session key for every recipient.
+✔ Encrypts plaintext message using AES-256-GCM
+✔ Generates msgID
+✔ Hashes biometric + salt
+✔ Derives per-user keys (HKDF: identity_hash + server_secret + msgID)
+✔ Wraps session key for each recipient
+✔ SAVES OUTPUT TO JSON FILES (required by receiver)
+
+OUTPUT FILES:
+ - encrypted/encrypted_message.json
+ - encrypted/<recipient>_wrap.json
 """
 
 import os
@@ -42,12 +45,12 @@ def generate_msg_id():
 
 # ---------------------- Message Encryption ----------------------
 def encrypt_message(key: bytes, plaintext: str, msg_id: str):
-
     plaintext_bytes = plaintext.encode('utf-8')
     aad = msg_id.encode('utf-8')
 
     aesgcm = AESGCM(key)
     nonce = os.urandom(12)
+
     ct_and_tag = aesgcm.encrypt(nonce, plaintext_bytes, aad)
     tag = ct_and_tag[-16:]
     ciphertext = ct_and_tag[:-16]
@@ -55,7 +58,7 @@ def encrypt_message(key: bytes, plaintext: str, msg_id: str):
     return nonce, ciphertext, tag
 
 
-# ---------------------- Biometric Dual Key System ----------------------
+# ---------------------- Biometric Key System ----------------------
 def generate_salt():
     return secrets.token_bytes(16)
 
@@ -81,38 +84,32 @@ def derive_user_key(identity_hash, server_secret, msg_id):
 def encrypt_session_key(derived_key, session_key):
     aesgcm = AESGCM(derived_key)
     nonce = secrets.token_bytes(12)
-    ciphertext = aesgcm.encrypt(nonce, session_key, None)
-    return nonce, ciphertext
+    wrapped = aesgcm.encrypt(nonce, session_key, None)
+    return nonce, wrapped
 
 
 # ---------------------- MAIN ----------------------
 def main():
-    parser = argparse.ArgumentParser(description="AES + Biometric Dual Key System")
+    parser = argparse.ArgumentParser(description="AES + Biometric Dual Key Sender")
     parser.add_argument(
         "-m", "--message",
         required=True,
         help="Message to encrypt"
     )
     args = parser.parse_args()
-
     message = args.message
 
+    # Create output directory
+    os.makedirs("encrypted", exist_ok=True)
+
     print("\n===============================")
-    print("   AES-256-GCM ENCRYPTION")
+    print("     ENCRYPTING MESSAGE")
     print("===============================\n")
 
-    # Step 1: Generate session key + msgID
     session_key = generate_k_sess()
     msgID = generate_msg_id()
 
-    # Step 2: Encrypt message
     nonce, ciphertext, tag = encrypt_message(session_key, message, msgID)
-
-    print("Message ID:", msgID)
-    print("Session Key (Base64):", b64(session_key))
-    print("Nonce:", b64(nonce))
-    print("Ciphertext:", b64(ciphertext))
-    print("Auth Tag:", b64(tag))
 
     encrypted_package = {
         "msgID": msgID,
@@ -121,15 +118,18 @@ def main():
         "tag_b64": b64(tag)
     }
 
-    print("\nEncrypted Message Package (JSON):")
-    print(json.dumps(encrypted_package, indent=2))
+    # SAVE encrypted message
+    with open("encrypted/encrypted_message.json", "w") as f:
+        json.dump(encrypted_package, f, indent=2)
 
-    # --------------------------------------------------------
-    print("\n===============================")
-    print("  BIOMETRIC-DRIVEN KEY WRAP")
-    print("===============================\n")
+    print("✔ Saved: encrypted/encrypted_message.json")
 
+    # Generate server_secret (must be given to receiver)
     server_secret = secrets.token_bytes(32)
+
+    print("\n===============================")
+    print("   GENERATING WRAPPED KEYS")
+    print("===============================\n")
 
     recipients = {
         "user_A": b"fingerprint_simulated_A",
@@ -141,19 +141,30 @@ def main():
 
         salt = generate_salt()
         identity_hash = hash_biometric(biometric_data, salt)
-
         derived_key = derive_user_key(identity_hash, server_secret, msgID)
 
         wrap_nonce, wrapped_key = encrypt_session_key(derived_key, session_key)
 
-        print(f"\nRecipient: {user}")
-        print(f"  Salt: {salt.hex()}")
-        print(f"  Identity Hash: {identity_hash.hex()[:20]}...")
-        print(f"  Derived Key: {derived_key.hex()[:20]}...")
-        print(f"  Wrap Nonce: {wrap_nonce.hex()}")
-        print(f"  Wrapped Session Key: {wrapped_key.hex()[:40]}...")
+        wrap_json = {
+            "user": user,
+            "msgID": msgID,
+            "server_secret_hex": server_secret.hex(),
+            "salt_hex": salt.hex(),
+            "identity_hash_hex": identity_hash.hex(),
+            "wrap_nonce_hex": wrap_nonce.hex(),
+            "wrapped_session_key_hex": wrapped_key.hex(),
+        }
 
-    print("\n✅ Encryption + Key Wrapping Completed Successfully!\n")
+        # Write file
+        out_path = f"encrypted/{user}_wrap.json"
+        with open(out_path, "w") as f:
+            json.dump(wrap_json, f, indent=2)
+
+        print(f"✔ Saved: {out_path}")
+
+    print("\n🎉 ALL DONE!")
+    print("Sender output is ready for your receiver.")
+    print("Use the printed server_secret_hex inside each wrap file.\n")
 
 
 if __name__ == "__main__":
